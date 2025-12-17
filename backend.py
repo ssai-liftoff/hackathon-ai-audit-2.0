@@ -1,10 +1,8 @@
-# backend.py
-
 import os
 import json
 import pandas as pd
 
-from openai import OpenAI
+from anthropic import Anthropic  # <-- Claude client
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -689,7 +687,7 @@ def run_full_analysis(
 
 
 # =====================================================================
-# 4. AI SUMMARY + EMAIL
+# 4. AI SUMMARY + EMAIL (CLAUDE)
 # =====================================================================
 
 def df_to_json_top(df, n=10):
@@ -706,13 +704,17 @@ def build_ai_summary_html(
     combined_summary_our,
     combined_rev_matrix,
     summary_metrics,
-    openai_api_key: str,
+    openai_api_key: str,  # reused name; this is actually the Claude key now
 ):
-    openai_api_key = (openai_api_key or "").strip()
-    if not openai_api_key:
-        raise RuntimeError("OpenAI API key not provided.")
+    """
+    Build HTML AI summary using Claude (Anthropic).
+    `openai_api_key` here is treated as the Anthropic API key for this Claude-only app.
+    """
+    claude_api_key = (openai_api_key or "").strip()
+    if not claude_api_key:
+        raise RuntimeError("Claude API key not provided.")
 
-    client = OpenAI(api_key=openai_api_key)
+    client = Anthropic(api_key=claude_api_key)
 
     ai_payload = {
         "legend_text": combined_legend,
@@ -727,7 +729,7 @@ def build_ai_summary_html(
     payload_json = json.dumps(ai_payload)
 
     system_prompt = """
-You are a Strategy Analyst at Liftoff Mobile working on Supple side Vungle Exchange.
+You are a Strategy Analyst at Liftoff Mobile working on Supply side Vungle Exchange.
 You analyse advertiser blocks, DSP spend, competitor monetization, and missed opportunities.
 
 You will receive 5 JSON tables:
@@ -796,16 +798,23 @@ DATA:
 Summarise according to the system rules above.
 """
 
-    response = client.responses.create(
-        model="gpt-5.1",
-        input=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+    # Claude messages.create call
+    response = client.messages.create(
+        model="claude-3-5-sonnet-latest",
+        max_tokens=2000,
         temperature=0.25,
+        system=system_prompt,
+        messages=[
+            {"role": "user", "content": user_prompt}
+        ],
     )
 
-    ai_summary_text = response.output[0].content[0].text
+    # Extract text content
+    ai_summary_text_parts = []
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            ai_summary_text_parts.append(block.text)
+    ai_summary_text = "".join(ai_summary_text_parts).strip()
 
     html_wrapper = f"""
 <html>
@@ -862,7 +871,7 @@ def run_full_pipeline(
     """
     Main function to be called by Streamlit.
     - Runs full multi-app analysis
-    - Optionally builds AI HTML summary (if OpenAI key provided)
+    - Optionally builds AI HTML summary (if Claude key provided)
     - Optionally sends email (if summary built + SMTP info provided)
     - Always returns:
         * combined tables (all apps)
@@ -998,8 +1007,8 @@ def run_full_pipeline(
     html_summary = None
     ai_error = None
 
-    openai_api_key_clean = (openai_api_key or "").strip()
-    if not openai_api_key_clean:
+    claude_key_clean = (openai_api_key or "").strip()
+    if not claude_key_clean:
         email_status = "ai_not_configured"
     else:
         try:
@@ -1011,7 +1020,7 @@ def run_full_pipeline(
                 combined_summary_our=combined_summary_our,
                 combined_rev_matrix=combined_rev_matrix,
                 summary_metrics=summary_metrics,
-                openai_api_key=openai_api_key_clean,
+                openai_api_key=claude_key_clean,
             )
             email_status = "summary_built"
 
