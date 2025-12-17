@@ -5,12 +5,12 @@ import pandas as pd
 
 from backend import run_full_pipeline
 
-st.set_page_config(page_title="Liftoff DSP AI Audit (Claude)", layout="wide")
+st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout="wide")
 
-st.title("Liftoff DSP – AI Block/Unblock Audit (Claude Edition)")
+st.title("[ai]udit – AI Tool for Tracking Blocks (Claude Edition)")
 st.write(
     "Provide publisher app IDs, optional exclusions, and your email + Claude API key. "
-    "The app will run the full analysis, optionally email the AI summary, and show detailed tables below."
+    "The tool will run the full analysis, optionally email the AI summary, and show detailed tables below."
 )
 
 # =====================================================================
