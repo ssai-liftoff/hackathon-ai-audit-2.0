@@ -5,11 +5,11 @@ import pandas as pd
 
 from backend import run_full_pipeline
 
-st.set_page_config(page_title="Liftoff DSP AI Audit", layout="wide")
+st.set_page_config(page_title="Liftoff DSP AI Audit (Claude)", layout="wide")
 
-st.title("Liftoff DSP – AI Block/Unblock Audit")
+st.title("Liftoff DSP – AI Block/Unblock Audit (Claude Edition)")
 st.write(
-    "Provide publisher app IDs, optional exclusions, and your email + API key. "
+    "Provide publisher app IDs, optional exclusions, and your email + Claude API key. "
     "The app will run the full analysis, optionally email the AI summary, and show detailed tables below."
 )
 
@@ -152,10 +152,15 @@ with col1:
     )
 
 with col2:
+    # Name kept as openai_api_key to match backend signature,
+    # but label/help clearly indicate it's the Claude / Anthropic key.
     openai_api_key = st.text_input(
-        "OpenAI API key",
+        "Claude API key",
         type="password",
-        help="Paste your `sk-...` or `sk-proj-...` key here. Leave blank to skip AI summary and only see tables.",
+        help=(
+            "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
+            "Leave blank to skip AI summary and only see tables."
+        ),
     )
 
     recipient_email = st.text_input(
@@ -237,7 +242,7 @@ if run_button:
                     recipient_email=recipient_email,
                     sender_email=sender_email,
                     gmail_app_password=gmail_app_password,
-                    openai_api_key=openai_api_key,
+                    openai_api_key=openai_api_key,  # passes Claude key through
                 )
             except Exception as e:
                 st.error(f"Something went wrong while running the pipeline: {e}")
@@ -273,23 +278,23 @@ if results is not None:
     ai_error = results.get("ai_error")
 
     if email_status == "email_sent":
-        st.info(f"AI summary generated and email sent to **{recipient_email}**.")
+        st.info(f"Claude summary generated and email sent to **{recipient_email}**.")
     elif email_status == "summary_built":
-        st.info("AI summary generated (email not sent – missing sender/recipient or Gmail app password).")
+        st.info("Claude summary generated (email not sent – missing sender/recipient or Gmail app password).")
     elif email_status == "failed_ai_or_email":
-        st.warning("AI summary or email failed. Showing tables only.")
+        st.warning("Claude summary or email failed. Showing tables only.")
         if ai_error:
             with st.expander("Show AI/email error details"):
                 st.code(ai_error, language="text")
     elif email_status == "ai_not_configured":
-        st.info("OpenAI API key not provided – skipping AI summary/email and showing tables only.")
+        st.info("Claude API key not provided – skipping AI summary/email and showing tables only.")
     else:
         st.info("AI summary/email not attempted (unknown status).")
 
     # ---------- AI SUMMARY PREVIEW ----------
     html_summary = results.get("html_summary")
     if html_summary:
-        st.subheader("AI Summary – Email Preview")
+        st.subheader("AI Summary – Email Preview (Claude)")
         st.caption("This is exactly what is sent in the email body.")
         st.components.v1.html(html_summary, height=500, scrolling=True)
 
@@ -391,7 +396,7 @@ if results is not None:
             )
         )
         st.caption(
-            "These aggregates are also used as input to the AI summary (lost spend, competitor revenue, etc.)."
+            "These aggregates are also used as input to the Claude summary (lost spend, competitor revenue, etc.)."
         )
 
 else:
