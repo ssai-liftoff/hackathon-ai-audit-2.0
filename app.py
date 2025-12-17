@@ -7,7 +7,7 @@ from backend import run_full_pipeline
 
 st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout="wide")
 
-st.title("[ai]udit – AI Tool for Tracking Blocks (Claude Edition)")
+st.title("[ai]udit – AI Tool for Tracking Blocks")
 st.write(
     "Provide publisher app IDs, optional exclusions, and your email + Claude API key. "
     "The tool will run the full analysis, optionally email the AI summary, and show detailed tables below."
