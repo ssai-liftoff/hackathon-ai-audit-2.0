@@ -19,6 +19,11 @@ st.write(
     "then run an [ai]udit to analyse blocks, missed demand, and competitor monetization."
 )
 
+# Session state for results so interactions (sorting/filtering) don't force re-run
+if "results" not in st.session_state:
+    st.session_state["results"] = None
+
+
 # =====================================================================
 # Helper: format spend / revenue columns as $ with no decimals
 # =====================================================================
@@ -173,13 +178,15 @@ def render_aggrid(df: pd.DataFrame, height: int = 380):
 
 # =====================================================================
 # Helper: parse & render AI summary HTML natively (NO AgGrid)
+#   - Headings & bullets rendered as Markdown
+#   - Tables rendered as raw HTML via st.markdown, so width is intrinsic
 # =====================================================================
 def render_ai_summary_native(html_summary: str):
     """
     Parse the Claude-generated HTML summary and render:
       - Headings & intro as Markdown
       - Bullet lists as Markdown bullets
-      - Tables as st.table (auto-size to content, not full-width)
+      - Tables as raw HTML, so width fits the data (not forced full-screen)
     """
     if not html_summary:
         st.info("No AI summary is available.")
@@ -208,43 +215,35 @@ def render_ai_summary_native(html_summary: str):
             for bullet in bullets:
                 st.markdown(f"- {bullet}")
 
-    # Supporting tables
+    # Supporting tables: render the actual HTML tables so width fits the data
     tables = soup.find_all("table")
     if tables:
         st.markdown("### Supporting tables")
 
         for idx, table in enumerate(tables, start=1):
             # Try to get the bold title just before the table
-            title = None
+            title_text = None
             prev = table.find_previous()
             while prev is not None:
                 if prev.name == "b":
-                    title = prev.get_text(strip=True)
+                    title_text = prev.get_text(strip=True)
                     break
                 prev = prev.find_previous()
 
-            if title:
-                st.markdown(f"##### {title}")
+            # Build an HTML fragment: optional title + original table HTML
+            if title_text:
+                fragment = f"<b>{title_text}</b><br>{str(table)}"
             else:
-                st.markdown(f"##### Table {idx}")
+                fragment = str(table)
 
-            # Build DataFrame from <table>
-            headers = [th.get_text(strip=True) for th in table.find_all("th")]
-            rows = []
-            for tr in table.find_all("tr")[1:]:
-                cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-                if cells:
-                    rows.append(cells)
+            # Wrap in a div so table doesn't stretch full-width
+            wrapped = f"""
+            <div style="display:inline-block; margin-bottom: 16px;">
+                {fragment}
+            </div>
+            """
 
-            if headers and rows:
-                df = pd.DataFrame(rows, columns=headers)
-            elif rows:
-                df = pd.DataFrame(rows)
-            else:
-                df = pd.DataFrame()
-
-            # Render as st.table so width fits data (not full stretch)
-            st.table(df)
+            st.markdown(wrapped, unsafe_allow_html=True)
 
 
 # -------------------------------
@@ -336,9 +335,9 @@ with st.sidebar:
     run_button = st.button("Run [ai]udit & (optionally) send email", type="primary")
 
 
-# Placeholder for results
-results = None
-
+# -------------------------------
+# RUN PIPELINE (ONLY on button click)
+# -------------------------------
 if run_button:
     # Parse app IDs "Looker style": split on commas, newlines, and whitespace
     raw_ids = app_ids_input.strip()
@@ -367,9 +366,13 @@ if run_button:
                     gmail_app_password=gmail_app_password,
                     openai_api_key=openai_api_key,  # passes Claude key through
                 )
+                st.session_state["results"] = results
             except Exception as e:
                 st.error(f"Something went wrong while running the pipeline: {e}")
-                results = None
+                st.session_state["results"] = None
+
+# Use stored results for display (so interactions don't clear them)
+results = st.session_state["results"]
 
 # -------------------------------
 # OUTPUTS
@@ -485,7 +488,7 @@ if results is not None:
                     df_pa4 = format_money_columns(tables["competitor_rev_matrix"].head(20))
                     render_aggrid(df_pa4)
 
-    # ----- Summary Metrics (simple dataframe) -----
+    # ----- Summary Metrics -----
     with tab_metrics:
         st.subheader("High-level Summary Metrics")
         st.dataframe(
