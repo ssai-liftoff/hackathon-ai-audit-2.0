@@ -15,23 +15,90 @@ st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout
 
 st.title("[ai]udit – AI Tool for Tracking Blocks")
 
-# Persistent, easy-to-read instructions (no mention of API key / Gmail password)
-instructions_text = """
-**How to use [ai]udit**
+# ---------------------------------------------------------------------
+# Global CSS for instruction & summary boxes + compact spacing
+# ---------------------------------------------------------------------
+st.markdown(
+    """
+<style>
+.instruction-box {
+    background-color: #f5f5f5;
+    padding: 16px 18px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    margin-bottom: 16px;
+}
+.instruction-box p,
+.instruction-box li {
+    font-size: 0.9rem;
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+.instruction-box ol {
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding-left: 1.3rem;
+}
 
-1. In the **sidebar**, paste one or more *publisher app IDs* (one per line or comma/space-separated).
-2. (Optional) Add any **block values to exclude** (domains or app market IDs) to clean up the analysis.
-3. (Optional) Enter a **recipient email** if you want the summary emailed after the run.
-4. (Optional) Adjust the **Scheduler (WIP)** controls to show how recurring audits might work in the future.
-5. Click **Run [ai]udit & (optionally) send email** in the sidebar.
-6. Use the tabs at the top to explore:
-   - **AI Summary** – narrative insights + supporting tables.
-   - **Combined Tables** – interactive, sortable view across all selected apps.
-   - **Per-App Tables** – drill-down per publisher app.
-   - **Summary Metrics** – top-line aggregates (lost spend, competitor revenue, etc.).
+.summary-box {
+    background-color: #ecfdf3;  /* pale green */
+    padding: 16px 18px;
+    border-radius: 8px;
+    border: 1px solid #bbf7d0;
+    margin-bottom: 16px;
+}
+.summary-box h2,
+.summary-box h3,
+.summary-box h4 {
+    margin-top: 0.4rem;
+    margin-bottom: 0.2rem;
+}
+.summary-box p,
+.summary-box li {
+    font-size: 0.9rem;
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+.summary-box ul {
+    margin-top: 0.2rem;
+    margin-bottom: 0.4rem;
+    padding-left: 1.2rem;
+}
+.summary-box table {
+    font-size: 0.8rem;
+    margin-top: 4px;
+    margin-bottom: 8px;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# ---------------------------------------------------------------------
+# Persistent, easy-to-read instructions (no mention of API key / Gmail)
+# ---------------------------------------------------------------------
+instructions_html = """
+<div class="instruction-box">
+  <p><b>How to use [ai]udit</b></p>
+  <ol>
+    <li>In the <b>sidebar</b>, paste one or more <i>publisher app IDs</i> (one per line or comma/space-separated).</li>
+    <li>(Optional) Add any <b>block values to exclude</b> (domains or app market IDs) to clean up the analysis.</li>
+    <li>(Optional) Enter a <b>recipient email</b> if you want the summary emailed after the run.</li>
+    <li>(Optional) Adjust the <b>Scheduler (WIP)</b> controls to show how recurring audits might work in the future.</li>
+    <li>Click <b>Run [ai]udit &amp; (optionally) send email</b> in the sidebar.</li>
+    <li>Use the tabs at the top to explore:
+      <ul>
+        <li><b>AI Summary</b> – narrative insights + supporting tables.</li>
+        <li><b>Combined Tables</b> – interactive, sortable view across all selected apps.</li>
+        <li><b>Per-App Tables</b> – drill-down per publisher app.</li>
+        <li><b>Summary Metrics</b> – top-line aggregates (lost spend, competitor revenue, etc.).</li>
+      </ul>
+    </li>
+  </ol>
+</div>
 """
 
-st.info(instructions_text)
+st.markdown(instructions_html, unsafe_allow_html=True)
 
 # Session state for results so interactions (sorting/filtering) don't force re-run
 if "results" not in st.session_state:
@@ -205,16 +272,15 @@ def render_aggrid(df: pd.DataFrame, height: int = 380):
 
 
 # =====================================================================
-# Helper: parse & render AI summary HTML natively (NO AgGrid)
-#   - Headings & bullets rendered as Markdown
-#   - Tables rendered as raw HTML via st.markdown, so width is intrinsic
+# Helper: parse & render AI summary HTML natively INSIDE green box
 # =====================================================================
 def render_ai_summary_native(html_summary: str):
     """
-    Parse the Claude-generated HTML summary and render:
-      - Headings & intro as Markdown
-      - Bullet lists as Markdown bullets
-      - Tables as raw HTML, so width fits the data (not forced full-screen)
+    Parse the Claude-generated HTML summary and render it inside
+    a compact, pale green box:
+      - Headings & intro as small HTML headings/paragraphs
+      - Bullet lists as tight <ul>/<li>
+      - Tables as inline-block HTML so width fits the data
     """
     if not html_summary:
         st.info("No AI summary is available.")
@@ -222,33 +288,37 @@ def render_ai_summary_native(html_summary: str):
 
     soup = BeautifulSoup(html_summary, "html.parser")
 
+    pieces = []
+
     # Top-level title (h2 in the HTML wrapper)
     h2 = soup.find("h2")
     if h2:
-        st.subheader(h2.get_text(strip=True))
+        pieces.append(f"<h3>{h2.get_text(strip=True)}</h3>")
 
     # First paragraph (intro)
     first_p = soup.find("p")
     if first_p:
-        st.write(first_p.get_text(" ", strip=True))
+        intro_text = first_p.get_text(" ", strip=True)
+        pieces.append(f"<p>{intro_text}</p>")
 
     # Key insights / Opportunities sections
     for h3 in soup.find_all("h3"):
         section_title = h3.get_text(strip=True)
-        st.markdown(f"### {section_title}")
+        pieces.append(f"<h4>{section_title}</h4>")
 
         ul = h3.find_next_sibling("ul")
         if ul:
-            bullets = [li.get_text(" ", strip=True) for li in ul.find_all("li")]
-            for bullet in bullets:
-                st.markdown(f"- {bullet}")
+            pieces.append("<ul>")
+            for li in ul.find_all("li"):
+                bullet_text = li.get_text(" ", strip=True)
+                pieces.append(f"<li>{bullet_text}</li>")
+            pieces.append("</ul>")
 
-    # Supporting tables: render the actual HTML tables so width fits the data
+    # Supporting tables
     tables = soup.find_all("table")
     if tables:
-        st.markdown("### Supporting tables")
-
-        for idx, table in enumerate(tables, start=1):
+        pieces.append("<h4>Supporting tables</h4>")
+        for table in tables:
             # Try to get the bold title just before the table
             title_text = None
             prev = table.find_previous()
@@ -258,20 +328,23 @@ def render_ai_summary_native(html_summary: str):
                     break
                 prev = prev.find_previous()
 
-            # Build an HTML fragment: optional title + original table HTML
             if title_text:
                 fragment = f"<b>{title_text}</b><br>{str(table)}"
             else:
                 fragment = str(table)
 
-            # Wrap in a div so table doesn't stretch full-width
-            wrapped = f"""
-            <div style="display:inline-block; margin-bottom: 16px;">
-                {fragment}
-            </div>
-            """
+            pieces.append(
+                f"""
+                <div style="display:inline-block; margin-right:12px; margin-bottom:8px;">
+                    {fragment}
+                </div>
+                """
+            )
 
-            st.markdown(wrapped, unsafe_allow_html=True)
+    combined_html = "".join(pieces)
+
+    box_html = f'<div class="summary-box">{combined_html}</div>'
+    st.markdown(box_html, unsafe_allow_html=True)
 
 
 # -------------------------------
@@ -339,7 +412,7 @@ with st.sidebar:
 
     st.markdown("---")
     # -------------------------------
-    # AI & Email (dev-only controls) – moved to bottom of sidebar
+    # AI & Email (dev-only controls) – bottom of sidebar
     # -------------------------------
     st.subheader("AI & Email (dev-only)")
 
@@ -453,7 +526,7 @@ if results is not None:
         ["AI Summary", "Combined Tables", "Per-App Tables", "Summary Metrics"]
     )
 
-    # ----- AI Summary (native, NO AgGrid) -----
+    # ----- AI Summary (native, green box, NO AgGrid) -----
     with tab_summary:
         html_summary = results.get("html_summary")
         if html_summary:
