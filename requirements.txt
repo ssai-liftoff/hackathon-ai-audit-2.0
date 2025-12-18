@@ -7,3 +7,4 @@ pandas
 anthropic>=0.25.0
 python-dotenv
 beautifulsoup4
+streamlit-aggrid
