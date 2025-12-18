@@ -66,9 +66,9 @@ st.markdown(
 }
 .summary-box table {
     font-size: 0.8rem;
-    margin-top: 4px;
-    margin-bottom: 8px;
-    width: auto;  /* tables size to content, not full width */
+    margin-top: 16px;   /* more space after Opportunities before first table */
+    margin-bottom: 10px;
+    width: auto;        /* tables size to content, not full width */
 }
 </style>
 """,
