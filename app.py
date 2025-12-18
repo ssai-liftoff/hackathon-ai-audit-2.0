@@ -1,6 +1,8 @@
 # app.py
 
 import re
+from html import unescape
+
 import streamlit as st
 import pandas as pd
 
@@ -165,6 +167,117 @@ def parse_excluded_values(raw: str):
     return [t.strip() for t in tokens if t.strip()]
 
 
+# =====================================================================
+# Helper: parse AI summary HTML into bullets + tables
+# =====================================================================
+def _extract_inner_ai_html(full_html: str) -> str:
+    """
+    Our email wrapper puts the AI summary HTML between two <hr> tags.
+    Extract that middle part. If not found, return original.
+    """
+    if not full_html:
+        return ""
+    m = re.search(r"<hr[^>]*>\s*(.*?)\s*<hr[^>]*>", full_html, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return full_html
+
+
+def _extract_list_section(inner_html: str, heading: str):
+    """
+    Extract all <li> items for a given <h3>heading</h3> section.
+    """
+    pattern = rf"<h3[^>]*>\s*{heading}\s*</h3>\s*<ul[^>]*>(.*?)</ul>"
+    m = re.search(pattern, inner_html, flags=re.DOTALL | re.IGNORECASE)
+    if not m:
+        return []
+
+    ul_block = m.group(1)
+    items = re.findall(r"<li[^>]*>(.*?)</li>", ul_block, flags=re.DOTALL | re.IGNORECASE)
+
+    def clean_html_text(t: str) -> str:
+        # Remove any residual tags, unescape HTML entities, and strip whitespace
+        no_tags = re.sub(r"<[^>]+>", "", t)
+        return unescape(no_tags).strip()
+
+    return [clean_html_text(item) for item in items if clean_html_text(item)]
+
+
+def _extract_tables(inner_html: str):
+    """
+    Extract tables of the form:
+      <b>Title</b><br>
+      <table>...</table>
+
+    Returns list of (title, DataFrame).
+    """
+    tables = []
+    # Regex to capture <b>title</b> then the following <table>...</table>
+    pattern = (
+        r"<b[^>]*>(.*?)</b>\s*<br[^>]*>\s*"
+        r"(<table[^>]*>.*?</table>)"
+    )
+    for title_raw, table_html in re.findall(pattern, inner_html, flags=re.DOTALL | re.IGNORECASE):
+        title = unescape(re.sub(r"<[^>]+>", "", title_raw)).strip()
+        if not title:
+            title = "Table"
+
+        # Extract header row
+        header_match = re.search(r"<tr[^>]*>\s*(.*?)\s*</tr>", table_html, flags=re.DOTALL | re.IGNORECASE)
+        if not header_match:
+            continue
+
+        header_block = header_match.group(1)
+        headers = re.findall(r"<th[^>]*>(.*?)</th>", header_block, flags=re.DOTALL | re.IGNORECASE)
+        headers = [unescape(re.sub(r"<[^>]+>", "", h)).strip() for h in headers if h.strip()]
+
+        if not headers:
+            continue
+
+        # Extract all rows (skip first, it's header)
+        row_blocks = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.DOTALL | re.IGNORECASE)
+        data_rows = []
+        for rb in row_blocks[1:]:
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", rb, flags=re.DOTALL | re.IGNORECASE)
+            if not cells:
+                continue
+            clean_cells = [
+                unescape(re.sub(r"<[^>]+>", "", c)).strip()
+                for c in cells
+            ]
+            # If unequal length, pad or trim to headers
+            if len(clean_cells) < len(headers):
+                clean_cells += [""] * (len(headers) - len(clean_cells))
+            elif len(clean_cells) > len(headers):
+                clean_cells = clean_cells[: len(headers)]
+            data_rows.append(clean_cells)
+
+        if data_rows:
+            df = pd.DataFrame(data_rows, columns=headers)
+            tables.append((title, df))
+
+    return tables
+
+
+def parse_ai_summary_html(full_html: str):
+    """
+    Parse the email-style HTML summary into:
+      - key_insights: list[str]
+      - opportunities: list[str]
+      - tables: list[(title, DataFrame)]
+    If parsing fails, components may be empty.
+    """
+    inner = _extract_inner_ai_html(full_html)
+    if not inner:
+        return [], [], []
+
+    key_insights = _extract_list_section(inner, "Key insights")
+    opportunities = _extract_list_section(inner, "Opportunities")
+    tables = _extract_tables(inner)
+
+    return key_insights, opportunities, tables
+
+
 # -------------------------------
 # SIDEBAR INPUTS
 # -------------------------------
@@ -264,7 +377,6 @@ run_button = sidebar.button("Run audit & (optionally) send email", type="primary
 # -------------------------------
 # MAIN PANEL – HOW TO USE
 # -------------------------------
-
 st.markdown("### How to use")
 st.markdown(
     "- Paste your publisher app IDs into the left sidebar.\n"
@@ -297,10 +409,10 @@ if run_button:
                 st.error(f"Something went wrong while running the pipeline: {e}")
                 results = None
 
+
 # -------------------------------
 # RENDER RESULTS
 # -------------------------------
-
 if results is not None:
     st.success("Analysis completed.")
 
@@ -349,14 +461,36 @@ if results is not None:
 
     # ----- AI Summary Tab -----
     with tab_summary:
-        st.subheader("AI Summary – Email Preview (Claude)")
+        st.subheader("AI Summary (Claude)")
+
         html_summary = results.get("html_summary")
         if html_summary:
-            st.caption("This is exactly what is sent in the email body.")
-            st.components.v1.html(html_summary, height=500, scrolling=True)
+            key_insights, opportunities, tables = parse_ai_summary_html(html_summary)
+
+            # If parsing worked, render natively; otherwise fall back to raw HTML preview
+            if key_insights or opportunities or tables:
+                if key_insights:
+                    st.markdown("#### Key insights")
+                    for item in key_insights:
+                        st.markdown(f"- {item}")
+
+                if opportunities:
+                    st.markdown("#### Opportunities")
+                    for item in opportunities:
+                        st.markdown(f"- {item}")
+
+                if tables:
+                    st.markdown("#### Top tables from summary")
+                    for title, df in tables:
+                        st.markdown(f"**{title}**")
+                        st.table(df)
+            else:
+                st.caption("Could not safely parse the AI summary into bullets/tables. Showing raw HTML preview instead.")
+                st.components.v1.html(html_summary, height=500, scrolling=True)
         else:
             st.info(
-                "No AI summary available. Either the Claude API key was not provided or the summary generation failed."
+                "No AI summary available. Either the Claude API key was not provided "
+                "or the summary generation failed."
             )
 
     # ----- Combined Tables -----
