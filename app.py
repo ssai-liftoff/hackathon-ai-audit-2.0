@@ -2,8 +2,8 @@
 
 import streamlit as st
 import pandas as pd
-import re
 from bs4 import BeautifulSoup
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 from backend import run_full_pipeline
 
@@ -11,8 +11,8 @@ st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout
 
 st.title("[ai]udit – AI Tool for Tracking Blocks")
 st.write(
-    "Paste your publisher app IDs in the sidebar, add optional exclusions, and your email + Claude API key. "
-    "The tool will run the full analysis, optionally email the AI summary, and show detailed tables below."
+    "Enter your publisher app IDs on the left, optionally configure exclusions and email + Claude API key, "
+    "and run the audit to see block, spend, and opportunity insights."
 )
 
 # =====================================================================
@@ -133,99 +133,46 @@ def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =====================================================================
-# Helper: render tables at narrower width
+# Helper: interactive table with st-aggrid
 # =====================================================================
-def render_narrow_table(df: pd.DataFrame, title: str = None, width_pct: int = 70):
+def render_interactive_table(df: pd.DataFrame, height: int = 400, key: str = None):
     """
-    Renders a table at a reduced width by wrapping in an HTML div.
-    width_pct = 70 means 70% width relative to Streamlit container.
+    Render an interactive, sortable, filterable table using st-aggrid.
     """
     if df is None or df.empty:
-        if title:
-            st.markdown(f"**{title}**")
-            st.caption("No data.")
+        st.write("No data to display.")
         return
 
-    if title:
-        st.markdown(f"**{title}**")
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        sortable=True,
+        filter=True,
+        resizable=True,
+    )
+    gb.configure_grid_options(domLayout="normal")
+    grid_options = gb.build()
 
-    html = f"""
-    <div style="width:{width_pct}%; margin-left:0;">
-        {df.to_html(index=False)}
-    </div>
+    AgGrid(
+        df,
+        gridOptions=grid_options,
+        data_return_mode=DataReturnMode.AS_INPUT,
+        update_mode=GridUpdateMode.NO_UPDATE,
+        fit_columns_on_grid_load=True,
+        height=height,
+        key=key,
+        enable_enterprise_modules=False,
+        allow_unsafe_jscode=False,
+    )
+
+
+def render_centered_table(df: pd.DataFrame, title: str, key: str, height: int = 400):
     """
-    st.markdown(html, unsafe_allow_html=True)
-
-
-# =====================================================================
-# Helper: parse AI summary HTML into native bullets + tables
-# =====================================================================
-def parse_ai_summary_html(html_str: str):
+    Render a table centered on the page with ~70% width.
     """
-    Parses the HTML summary from Claude into:
-      - key_insights: list[str]
-      - opportunities: list[str]
-      - tables: list[(title, DataFrame)]
-    """
-    result = {"key_insights": [], "opportunities": [], "tables": []}
-    if not html_str:
-        return result
-
-    soup = BeautifulSoup(html_str, "html.parser")
-
-    # Key insights
-    key_h3 = soup.find("h3", string=lambda s: s and "Key insights" in s)
-    if key_h3:
-        ul = key_h3.find_next("ul")
-        if ul:
-            result["key_insights"] = [
-                li.get_text(strip=True) for li in ul.find_all("li")
-            ]
-
-    # Opportunities
-    opp_h3 = soup.find("h3", string=lambda s: s and "Opportunities" in s)
-    if opp_h3:
-        ul = opp_h3.find_next("ul")
-        if ul:
-            result["opportunities"] = [
-                li.get_text(strip=True) for li in ul.find_all("li")
-            ]
-
-    # Tables
-    for table in soup.find_all("table"):
-        # Try to get title from preceding <b> tag
-        title_tag = table.find_previous("b")
-        title = title_tag.get_text(strip=True) if title_tag else "Table"
-
-        rows = []
-        headers = []
-        for i, tr in enumerate(table.find_all("tr")):
-            cells = [td.get_text(strip=True) for td in tr.find_all(["th", "td"])]
-            if i == 0:
-                headers = cells
-            else:
-                rows.append(cells)
-        try:
-            df = pd.DataFrame(rows, columns=headers if headers else None)
-        except Exception:
-            df = pd.DataFrame(rows)
-        result["tables"].append((title, df))
-
-    return result
-
-
-# =====================================================================
-# Helper: parse app IDs (Looker-ish UX)
-# =====================================================================
-def parse_app_ids(raw: str):
-    """
-    Accepts one-per-line or comma-/space-separated app IDs.
-    Returns a list of cleaned IDs.
-    """
-    if not raw:
-        return []
-    tokens = re.split(r"[,\s]+", raw)
-    return [t.strip() for t in tokens if t.strip()]
+    st.markdown(f"### {title}")
+    left, mid, right = st.columns([0.15, 0.7, 0.15])
+    with mid:
+        render_interactive_table(df, height=height, key=key)
 
 
 # -------------------------------
@@ -236,8 +183,9 @@ with st.sidebar:
 
     app_ids_input = st.text_area(
         "Publisher app IDs",
-        placeholder="Paste IDs here:\n632cc7810ca02c6344d51822\n632cc70d35cc2d93ebf3b2d5\n...",
+        placeholder="Paste one app ID per line\n632cc7810ca02c6344d51822\n632cc70d35cc2d93ebf3b2d5\n...",
         height=140,
+        help="You can paste a column from Sheets/Looker. Newlines or commas are both accepted.",
     )
 
     excluded_input = st.text_area(
@@ -259,21 +207,30 @@ with st.sidebar:
     )
 
     recipient_email = st.text_input(
-        "Recipient email (AI summary will be sent here)",
+        "Recipient email (summary will be sent here)",
         value="",
+    )
+
+    # Sender Gmail is fixed in code to ssai@liftoff.io
+    st.text_input(
+        "Sender Gmail (fixed)",
+        value="ssai@liftoff.io",
+        disabled=True,
+        help="Sender is fixed for now; using ssai@liftoff.io with Gmail App Password below.",
     )
 
     gmail_app_password = st.text_input(
         "Gmail App Password",
         type="password",
-        help=(
-            "16-character Gmail App Password for sender `ssai@liftoff.io`. "
-            "Leave blank to skip sending email and only show tables."
-        ),
+        help="16-character Gmail App Password for ssai@liftoff.io. Leave blank to skip sending email and only show tables.",
     )
 
-    st.markdown("---")
-    st.subheader("Scheduler (WIP)")
+    st.markdown("### Scheduler (WIP)")
+
+    st.caption(
+        "Prototype controls for future automation. These settings are **not yet scheduling anything**, "
+        "but can be used in demos to show how recurring audits might be configured."
+    )
 
     scheduler_enabled = st.checkbox(
         "Enable schedule (WIP)",
@@ -308,40 +265,30 @@ with st.sidebar:
 results = None
 
 # -------------------------------
-# MAIN AREA – INTRO
-# -------------------------------
-st.markdown("### How to use this tool")
-st.markdown(
-    """
-1. Paste one or more **publisher app IDs** in the sidebar (one per line or comma-separated).  
-2. Optionally add **excluded domains / app market IDs** (e.g. house ads or test partners).  
-3. Add your **Claude API key** if you want an AI-written email summary.  
-4. Add **recipient email** and Gmail App Password if you want the summary emailed.  
-5. Click **Run audit** to see combined and per-app tables.
-"""
-)
-
-# -------------------------------
 # RUN PIPELINE
 # -------------------------------
 if run_button:
     # Basic validation
-    target_app_ids = parse_app_ids(app_ids_input)
-    excluded_block_values = [
-        x.strip() for x in re.split(r"[,\n]+", excluded_input) if x.strip()
-    ]
+    # Accept both newline and comma separated IDs (Looker-style paste)
+    ids_normalized = app_ids_input.replace("\r", "\n").replace(",", "\n")
+    target_app_ids = [x.strip() for x in ids_normalized.split("\n") if x.strip()]
+
+    excluded_normalized = excluded_input.replace("\r", "\n").replace(",", "\n")
+    excluded_block_values = [x.strip() for x in excluded_normalized.split("\n") if x.strip()]
 
     if not target_app_ids:
-        st.error("Please provide at least one publisher app ID in the sidebar.")
+        st.error("Please provide at least one publisher app ID.")
     else:
         with st.spinner("Running full analysis..."):
             try:
+                # Sender is fixed here
+                sender_email = "ssai@liftoff.io"
+
                 results = run_full_pipeline(
                     target_app_ids=target_app_ids,
                     excluded_block_values=excluded_block_values,
                     recipient_email=recipient_email,
-                    # sender_email handled in backend (defaults to ssai@liftoff.io)
-                    sender_email="",
+                    sender_email=sender_email,
                     gmail_app_password=gmail_app_password,
                     openai_api_key=claude_api_key,  # passes Claude key through
                 )
@@ -350,8 +297,14 @@ if run_button:
                 results = None
 
 # -------------------------------
-# OUTPUTS
+# MAIN OUTPUTS
 # -------------------------------
+st.markdown("### Enter your app IDs to track blocks")
+st.caption(
+    "Paste one or more app IDs in the sidebar, configure any exclusions and email, then click "
+    "**Run audit & (optionally) send email**."
+)
+
 if results is not None:
     st.success("Analysis completed.")
 
@@ -380,7 +333,7 @@ if results is not None:
     if email_status == "email_sent":
         st.info(f"Claude summary generated and email sent to **{recipient_email}**.")
     elif email_status == "summary_built":
-        st.info("Claude summary generated (email not sent – missing Gmail app password or recipient).")
+        st.info("Claude summary generated (email not sent – missing Gmail App Password or recipient).")
     elif email_status == "failed_ai_or_email":
         st.warning("Claude summary or email failed. Showing tables only.")
         if ai_error:
@@ -391,79 +344,115 @@ if results is not None:
     else:
         st.info("AI summary/email not attempted (unknown status).")
 
+    html_summary = results.get("html_summary")
+
     # ---------- TABS ----------
     tab_summary, tab_combined, tab_per_app, tab_metrics = st.tabs(
         ["AI Summary", "Combined Tables", "Per-App Tables", "Summary Metrics"]
     )
 
-    # ---------- AI SUMMARY TAB ----------
+    # ----- AI Summary Tab -----
     with tab_summary:
-        html_summary = results.get("html_summary")
-
+        st.subheader("AI Summary (Claude)")
         if not html_summary:
-            st.info("No AI summary available. Provide a valid Claude API key to generate one.")
+            st.info("No AI summary available. Provide a valid Claude API key in the sidebar and rerun.")
         else:
-            parsed = parse_ai_summary_html(html_summary)
-            key_insights = parsed["key_insights"]
-            opportunities = parsed["opportunities"]
-            tables = parsed["tables"]
+            soup = BeautifulSoup(html_summary, "html.parser")
 
-            st.subheader("Key insights")
-            if key_insights:
-                for bullet in key_insights:
-                    st.markdown(f"- {bullet}")
-            else:
-                st.caption("No key insights found in summary.")
+            # Render heading + bullet sections
+            for h in soup.find_all("h3"):
+                title = h.get_text(strip=True)
+                st.markdown(f"#### {title}")
+                ul = h.find_next_sibling("ul")
+                if ul:
+                    for li in ul.find_all("li"):
+                        st.markdown(f"- {li.get_text(strip=True)}")
 
-            st.subheader("Opportunities")
-            if opportunities:
-                for bullet in opportunities:
-                    st.markdown(f"- {bullet}")
-            else:
-                st.caption("No opportunities found in summary.")
-
+            # Render any tables from the HTML as native DataFrames with money formatting
+            tables = soup.find_all("table")
             if tables:
-                st.markdown("#### Top tables from summary")
-                for title, df in tables:
-                    render_narrow_table(df, title=title, width_pct=70)
+                st.markdown("#### Tables from AI Summary")
+                for i, table in enumerate(tables):
+                    # Try to grab a title from the preceding <b> tag
+                    title_tag = table.find_previous("b")
+                    tbl_title = title_tag.get_text(strip=True) if title_tag else f"Table {i+1}"
 
-            with st.expander("View raw email HTML (debug)", expanded=False):
+                    rows = table.find_all("tr")
+                    if not rows:
+                        continue
+                    header_cells = rows[0].find_all(["th", "td"])
+                    headers = [hc.get_text(strip=True) for hc in header_cells]
+
+                    data_rows = []
+                    for tr in rows[1:]:
+                        cells = tr.find_all(["td", "th"])
+                        if cells:
+                            data_rows.append([c.get_text(strip=True) for c in cells])
+
+                    if not data_rows:
+                        continue
+
+                    df_tbl = pd.DataFrame(data_rows, columns=headers)
+                    df_tbl = format_money_columns(df_tbl)
+
+                    left, mid, right = st.columns([0.15, 0.7, 0.15])
+                    with mid:
+                        st.markdown(f"##### {tbl_title}")
+                        render_interactive_table(df_tbl, height=260, key=f"ai_table_{i}")
+
+            with st.expander("Show raw HTML email body"):
                 st.code(html_summary, language="html")
 
-    # ---------- COMBINED TABLES ----------
+    # ----- Combined Tables Tab -----
     with tab_combined:
         st.subheader("Combined Tables (All Selected Apps)")
 
         with st.expander("Legend (similar app mappings)", expanded=False):
             st.code(results["combined_legend"], language="text")
 
-        render_narrow_table(
-            format_money_columns(results["combined_blocks_with_spend"].head(50)),
-            title="1. Blocks enriched with L7D DSP spend (app + domain)",
-            width_pct=70,
+        # 1. Blocks with L7D DSP spend
+        combined_blocks_with_spend = format_money_columns(
+            results["combined_blocks_with_spend"].head(50)
+        )
+        render_centered_table(
+            combined_blocks_with_spend,
+            "1. Blocks enriched with L7D DSP spend (app + domain)",
+            key="combined_blocks_with_spend",
         )
 
-        render_narrow_table(
-            format_money_columns(results["combined_blocks_with_global"].head(50)),
-            title="2. Global advertiser network spend (L30D) for blocks",
-            width_pct=70,
+        # 2. Global advertiser network spend
+        combined_blocks_with_global = format_money_columns(
+            results["combined_blocks_with_global"].head(50)
+        )
+        render_centered_table(
+            combined_blocks_with_global,
+            "2. Global advertiser network spend (L30D) for blocks",
+            key="combined_blocks_with_global",
         )
 
-        render_narrow_table(
-            format_money_columns(
-                format_block_summary_table(results["combined_summary_our"].head(50))
-            ),
-            title="3. Block summary per app (our apps only)",
-            width_pct=70,
+        # 3. Block summary per app
+        combined_summary_our = format_money_columns(
+            format_block_summary_table(
+                results["combined_summary_our"].head(50)
+            )
+        )
+        render_centered_table(
+            combined_summary_our,
+            "3. Block summary per app (our apps only)",
+            key="combined_summary_our",
         )
 
-        render_narrow_table(
-            format_money_columns(results["combined_rev_matrix"].head(50)),
-            title="4. Competitor revenue matrix (L7D per similar app)",
-            width_pct=70,
+        # 4. Competitor revenue matrix
+        combined_rev_matrix = format_money_columns(
+            results["combined_rev_matrix"].head(50)
+        )
+        render_centered_table(
+            combined_rev_matrix,
+            "4. Competitor revenue matrix (L7D per similar app)",
+            key="combined_rev_matrix",
         )
 
-    # ---------- PER-APP TABLES ----------
+    # ----- Per-App Tables Tab -----
     with tab_per_app:
         st.subheader("Per-App Detailed Tables")
 
@@ -478,43 +467,64 @@ if results is not None:
                         with st.expander("Similar app legend", expanded=False):
                             st.code(legend_text, language="text")
 
-                    render_narrow_table(
-                        format_money_columns(tables["blocks_with_spend"].head(20)),
-                        title="Blocks enriched with L7D DSP spend (app + domain)",
-                        width_pct=70,
+                    # Blocks with L7D DSP spend
+                    df_spend = format_money_columns(
+                        tables["blocks_with_spend"].head(20)
+                    )
+                    render_centered_table(
+                        df_spend,
+                        "Blocks enriched with L7D DSP spend (app + domain)",
+                        key=f"{app_id}_blocks_with_spend",
+                        height=320,
                     )
 
-                    render_narrow_table(
-                        format_money_columns(tables["blocks_with_global"].head(20)),
-                        title="Global advertiser network spend (L30D) for blocks",
-                        width_pct=70,
+                    # Global advertiser network spend
+                    df_global = format_money_columns(
+                        tables["blocks_with_global"].head(20)
+                    )
+                    render_centered_table(
+                        df_global,
+                        "Global advertiser network spend (L30D) for blocks",
+                        key=f"{app_id}_blocks_with_global",
+                        height=320,
                     )
 
-                    render_narrow_table(
-                        format_money_columns(
-                            format_block_summary_table(tables["summary_per_app"].head(20))
-                        ),
-                        title="Block summary per app (advertiser L30D spend > 30,000)",
-                        width_pct=70,
+                    # Block summary per app
+                    df_summary = format_money_columns(
+                        format_block_summary_table(
+                            tables["summary_per_app"].head(20)
+                        )
+                    )
+                    render_centered_table(
+                        df_summary,
+                        "Block summary per app (advertiser L30D spend > 30,000)",
+                        key=f"{app_id}_summary_per_app",
+                        height=320,
                     )
 
-                    render_narrow_table(
-                        format_money_columns(tables["competitor_rev_matrix"].head(20)),
-                        title="Competitor revenue matrix (L7D per similar app)",
-                        width_pct=70,
+                    # Competitor revenue matrix
+                    df_comp = format_money_columns(
+                        tables["competitor_rev_matrix"].head(20)
+                    )
+                    render_centered_table(
+                        df_comp,
+                        "Competitor revenue matrix (L7D per similar app)",
+                        key=f"{app_id}_competitor_rev_matrix",
+                        height=320,
                     )
 
-    # ---------- SUMMARY METRICS ----------
+    # ----- Summary Metrics Tab -----
     with tab_metrics:
         st.subheader("High-level Summary Metrics")
-        render_narrow_table(
-            format_summary_metrics(results["summary_metrics"]),
-            title="Summary Metrics",
-            width_pct=70,
-        )
+        metrics_df = format_summary_metrics(results["summary_metrics"])
+
+        left, mid, right = st.columns([0.15, 0.7, 0.15])
+        with mid:
+            render_interactive_table(metrics_df, height=220, key="summary_metrics")
+
         st.caption(
             "These aggregates are also used as input to the Claude summary (lost spend, competitor revenue, etc.)."
         )
 
 else:
-    st.info("Use the sidebar to configure inputs and click **Run audit & (optionally) send email** to start.")
+    st.info("Fill in the inputs in the left sidebar and click **Run audit & (optionally) send email** to start.")
