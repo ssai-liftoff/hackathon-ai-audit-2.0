@@ -262,7 +262,7 @@ run_button = sidebar.button("Run audit & (optionally) send email", type="primary
 
 
 # -------------------------------
-# MAIN PANEL – OUTPUTS
+# MAIN PANEL – HOW TO USE
 # -------------------------------
 
 st.markdown("### How to use")
@@ -340,26 +340,31 @@ if results is not None:
     else:
         st.info("AI summary/email not attempted (unknown status).")
 
-    # ---------- AI SUMMARY PREVIEW ----------
-    html_summary = results.get("html_summary")
-    if html_summary:
-        st.subheader("AI Summary – Email Preview (Claude)")
-        st.caption("This is exactly what is sent in the email body.")
-        st.components.v1.html(html_summary, height=500, scrolling=True)
-
     st.markdown("---")
 
-    # ---------- TABS FOR TABLES ----------
-    tab_combined, tab_per_app, tab_metrics = st.tabs(
-        ["Combined Tables", "Per-App Tables", "Summary Metrics"]
+    # ---------- TABS (AI Summary now has its own tab) ----------
+    tab_summary, tab_combined, tab_per_app, tab_metrics = st.tabs(
+        ["AI Summary", "Combined Tables", "Per-App Tables", "Summary Metrics"]
     )
+
+    # ----- AI Summary Tab -----
+    with tab_summary:
+        st.subheader("AI Summary – Email Preview (Claude)")
+        html_summary = results.get("html_summary")
+        if html_summary:
+            st.caption("This is exactly what is sent in the email body.")
+            st.components.v1.html(html_summary, height=500, scrolling=True)
+        else:
+            st.info(
+                "No AI summary available. Either the Claude API key was not provided or the summary generation failed."
+            )
 
     # ----- Combined Tables -----
     with tab_combined:
         st.subheader("Combined Tables (All Selected Apps)")
 
-        st.markdown("**Legend (similar app mappings)**")
-        st.code(results["combined_legend"], language="text")
+        with st.expander("Legend (similar app mappings)", expanded=False):
+            st.code(results["combined_legend"], language="text")
 
         st.markdown("### 1. Blocks enriched with L7D DSP spend (app + domain)")
         st.dataframe(
@@ -403,8 +408,8 @@ if results is not None:
                 with st.expander(f"Publisher app: {app_id}", expanded=False):
                     legend_text = tables.get("legend_text", "")
                     if legend_text:
-                        st.markdown("**Similar app legend**")
-                        st.code(legend_text, language="text")
+                        with st.expander("Similar app legend", expanded=False):
+                            st.code(legend_text, language="text")
 
                     st.markdown("**Blocks enriched with L7D DSP spend (app + domain)**")
                     st.dataframe(
