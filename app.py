@@ -1,10 +1,9 @@
 # app.py
 
-import re
-from html import unescape
-
 import streamlit as st
 import pandas as pd
+import re
+from bs4 import BeautifulSoup
 
 from backend import run_full_pipeline
 
@@ -12,10 +11,9 @@ st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout
 
 st.title("[ai]udit – AI Tool for Tracking Blocks")
 st.write(
-    "Start by entering one or more publisher app IDs in the left sidebar. "
-    "Then add optional exclusions, your recipient email, and Claude API key to generate an AI summary."
+    "Paste your publisher app IDs in the sidebar, add optional exclusions, and your email + Claude API key. "
+    "The tool will run the full analysis, optionally email the AI summary, and show detailed tables below."
 )
-
 
 # =====================================================================
 # Helper: format spend / revenue columns as $ with no decimals
@@ -135,265 +133,206 @@ def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =====================================================================
-# Helper: parse App IDs like a Looker-style filter
+# Helper: render tables at narrower width
 # =====================================================================
-def parse_app_ids(raw: str):
+def render_narrow_table(df: pd.DataFrame, title: str = None, width_pct: int = 70):
     """
-    Turn a pasted blob (comma, whitespace, or newline separated)
-    into a clean list of app IDs.
-    Supports:
-      - comma-separated
-      - one-per-line
-      - mixtures of spaces/newlines/commas
+    Renders a table at a reduced width by wrapping in an HTML div.
+    width_pct = 70 means 70% width relative to Streamlit container.
     """
-    raw = (raw or "").strip()
-    if not raw:
-        return []
+    if df is None or df.empty:
+        if title:
+            st.markdown(f"**{title}**")
+            st.caption("No data.")
+        return
 
-    tokens = re.split(r"[,\s]+", raw)
-    return [t for t in tokens if t]
+    if title:
+        st.markdown(f"**{title}**")
 
-
-def parse_excluded_values(raw: str):
+    html = f"""
+    <div style="width:{width_pct}%; margin-left:0;">
+        {df.to_html(index=False)}
+    </div>
     """
-    Similar to parse_app_ids, but a bit looser.
-    Typically domains / market IDs.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-
-    tokens = re.split(r"[,\n\r\t]+", raw)
-    return [t.strip() for t in tokens if t.strip()]
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # =====================================================================
-# Helper: parse AI summary HTML into bullets + tables
+# Helper: parse AI summary HTML into native bullets + tables
 # =====================================================================
-def _extract_inner_ai_html(full_html: str) -> str:
+def parse_ai_summary_html(html_str: str):
     """
-    Our email wrapper puts the AI summary HTML between two <hr> tags.
-    Extract that middle part. If not found, return original.
-    """
-    if not full_html:
-        return ""
-    m = re.search(r"<hr[^>]*>\s*(.*?)\s*<hr[^>]*>", full_html, flags=re.DOTALL | re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return full_html
-
-
-def _extract_list_section(inner_html: str, heading: str):
-    """
-    Extract all <li> items for a given <h3>heading</h3> section.
-    """
-    pattern = rf"<h3[^>]*>\s*{heading}\s*</h3>\s*<ul[^>]*>(.*?)</ul>"
-    m = re.search(pattern, inner_html, flags=re.DOTALL | re.IGNORECASE)
-    if not m:
-        return []
-
-    ul_block = m.group(1)
-    items = re.findall(r"<li[^>]*>(.*?)</li>", ul_block, flags=re.DOTALL | re.IGNORECASE)
-
-    def clean_html_text(t: str) -> str:
-        # Remove any residual tags, unescape HTML entities, and strip whitespace
-        no_tags = re.sub(r"<[^>]+>", "", t)
-        return unescape(no_tags).strip()
-
-    return [clean_html_text(item) for item in items if clean_html_text(item)]
-
-
-def _extract_tables(inner_html: str):
-    """
-    Extract tables of the form:
-      <b>Title</b><br>
-      <table>...</table>
-
-    Returns list of (title, DataFrame).
-    """
-    tables = []
-    # Regex to capture <b>title</b> then the following <table>...</table>
-    pattern = (
-        r"<b[^>]*>(.*?)</b>\s*<br[^>]*>\s*"
-        r"(<table[^>]*>.*?</table>)"
-    )
-    for title_raw, table_html in re.findall(pattern, inner_html, flags=re.DOTALL | re.IGNORECASE):
-        title = unescape(re.sub(r"<[^>]+>", "", title_raw)).strip()
-        if not title:
-            title = "Table"
-
-        # Extract header row
-        header_match = re.search(r"<tr[^>]*>\s*(.*?)\s*</tr>", table_html, flags=re.DOTALL | re.IGNORECASE)
-        if not header_match:
-            continue
-
-        header_block = header_match.group(1)
-        headers = re.findall(r"<th[^>]*>(.*?)</th>", header_block, flags=re.DOTALL | re.IGNORECASE)
-        headers = [unescape(re.sub(r"<[^>]+>", "", h)).strip() for h in headers if h.strip()]
-
-        if not headers:
-            continue
-
-        # Extract all rows (skip first, it's header)
-        row_blocks = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.DOTALL | re.IGNORECASE)
-        data_rows = []
-        for rb in row_blocks[1:]:
-            cells = re.findall(r"<td[^>]*>(.*?)</td>", rb, flags=re.DOTALL | re.IGNORECASE)
-            if not cells:
-                continue
-            clean_cells = [
-                unescape(re.sub(r"<[^>]+>", "", c)).strip()
-                for c in cells
-            ]
-            # If unequal length, pad or trim to headers
-            if len(clean_cells) < len(headers):
-                clean_cells += [""] * (len(headers) - len(clean_cells))
-            elif len(clean_cells) > len(headers):
-                clean_cells = clean_cells[: len(headers)]
-            data_rows.append(clean_cells)
-
-        if data_rows:
-            df = pd.DataFrame(data_rows, columns=headers)
-            tables.append((title, df))
-
-    return tables
-
-
-def parse_ai_summary_html(full_html: str):
-    """
-    Parse the email-style HTML summary into:
+    Parses the HTML summary from Claude into:
       - key_insights: list[str]
       - opportunities: list[str]
       - tables: list[(title, DataFrame)]
-    If parsing fails, components may be empty.
     """
-    inner = _extract_inner_ai_html(full_html)
-    if not inner:
-        return [], [], []
+    result = {"key_insights": [], "opportunities": [], "tables": []}
+    if not html_str:
+        return result
 
-    key_insights = _extract_list_section(inner, "Key insights")
-    opportunities = _extract_list_section(inner, "Opportunities")
-    tables = _extract_tables(inner)
+    soup = BeautifulSoup(html_str, "html.parser")
 
-    return key_insights, opportunities, tables
+    # Key insights
+    key_h3 = soup.find("h3", string=lambda s: s and "Key insights" in s)
+    if key_h3:
+        ul = key_h3.find_next("ul")
+        if ul:
+            result["key_insights"] = [
+                li.get_text(strip=True) for li in ul.find_all("li")
+            ]
+
+    # Opportunities
+    opp_h3 = soup.find("h3", string=lambda s: s and "Opportunities" in s)
+    if opp_h3:
+        ul = opp_h3.find_next("ul")
+        if ul:
+            result["opportunities"] = [
+                li.get_text(strip=True) for li in ul.find_all("li")
+            ]
+
+    # Tables
+    for table in soup.find_all("table"):
+        # Try to get title from preceding <b> tag
+        title_tag = table.find_previous("b")
+        title = title_tag.get_text(strip=True) if title_tag else "Table"
+
+        rows = []
+        headers = []
+        for i, tr in enumerate(table.find_all("tr")):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["th", "td"])]
+            if i == 0:
+                headers = cells
+            else:
+                rows.append(cells)
+        try:
+            df = pd.DataFrame(rows, columns=headers if headers else None)
+        except Exception:
+            df = pd.DataFrame(rows)
+        result["tables"].append((title, df))
+
+    return result
+
+
+# =====================================================================
+# Helper: parse app IDs (Looker-ish UX)
+# =====================================================================
+def parse_app_ids(raw: str):
+    """
+    Accepts one-per-line or comma-/space-separated app IDs.
+    Returns a list of cleaned IDs.
+    """
+    if not raw:
+        return []
+    tokens = re.split(r"[,\s]+", raw)
+    return [t.strip() for t in tokens if t.strip()]
 
 
 # -------------------------------
 # SIDEBAR INPUTS
 # -------------------------------
-sidebar = st.sidebar
-sidebar.header("Inputs")
+with st.sidebar:
+    st.header("Inputs")
 
-app_ids_input = sidebar.text_area(
-    "Publisher app IDs",
-    placeholder=(
-        "Paste one app ID per line, or comma-separated.\n"
-        "Example:\n"
-        "632cc7810ca02c6344d51822\n632cc70d35cc2d93ebf3b2d5"
-    ),
-    height=140,
-)
+    app_ids_input = st.text_area(
+        "Publisher app IDs",
+        placeholder="Paste IDs here:\n632cc7810ca02c6344d51822\n632cc70d35cc2d93ebf3b2d5\n...",
+        height=140,
+    )
 
-excluded_input = sidebar.text_area(
-    "Excluded block values (optional)",
-    placeholder="dreamgames.com\n1234567890",
-    height=100,
-    help="Use to ignore specific advertiser domains or app market IDs in the block analysis.",
-)
+    excluded_input = st.text_area(
+        "Excluded block values (optional)",
+        placeholder="dreamgames.com\n1234567890",
+        height=100,
+        help="Use to ignore specific advertiser domains or app market IDs in the block analysis.",
+    )
 
-# Name kept as openai_api_key to match backend signature,
-# but label/help clearly indicate it's the Claude / Anthropic key.
-openai_api_key = sidebar.text_input(
-    "Claude API key",
-    type="password",
-    help=(
-        "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
-        "Leave blank to skip AI summary and only see tables."
-    ),
-)
+    # Name kept as openai_api_key to match backend signature,
+    # but label/help clearly indicate it's the Claude / Anthropic key.
+    claude_api_key = st.text_input(
+        "Claude API key",
+        type="password",
+        help=(
+            "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
+            "Leave blank to skip AI summary and only see tables."
+        ),
+    )
 
-recipient_email = sidebar.text_input(
-    "Recipient email (summary will be sent here)",
-    value="",
-)
+    recipient_email = st.text_input(
+        "Recipient email (AI summary will be sent here)",
+        value="",
+    )
 
-# Sender Gmail is now fixed; no user input.
-SENDER_GMAIL = "ssai@liftoff.io"
-sidebar.caption(
-    f"Emails will always be sent from **{SENDER_GMAIL}** using the Gmail App Password below."
-)
+    gmail_app_password = st.text_input(
+        "Gmail App Password",
+        type="password",
+        help=(
+            "16-character Gmail App Password for sender `ssai@liftoff.io`. "
+            "Leave blank to skip sending email and only show tables."
+        ),
+    )
 
-gmail_app_password = sidebar.text_input(
-    "Gmail App Password (for sender account)",
-    type="password",
-    help="16-character Gmail App Password for ssai@liftoff.io. "
-         "Leave blank to skip sending email and only show tables.",
-)
+    st.markdown("---")
+    st.subheader("Scheduler (WIP)")
 
-# -------------------------------
-# Inline Scheduler (WIP – no real automation)
-# -------------------------------
-sidebar.markdown("### Scheduler (WIP)")
-
-sidebar.caption(
-    "Prototype controls for future automation. These settings are **not yet scheduling anything**, "
-    "but can be used in demos to show how recurring audits might be configured."
-)
-
-sched_col1, sched_col2 = sidebar.columns([1, 1])
-
-with sched_col1:
-    scheduler_enabled = sched_col1.checkbox(
+    scheduler_enabled = st.checkbox(
         "Enable schedule (WIP)",
         value=False,
         help="Visual only – does not actually schedule background runs yet.",
     )
 
-with sched_col2:
-    schedule_frequency = sched_col2.selectbox(
+    schedule_frequency = st.selectbox(
         "Frequency (WIP)",
         ["None", "Daily", "Weekly", "Monthly"],
         index=0,
         help="Future: how often the audit would run.",
     )
 
-schedule_time = sidebar.time_input(
-    "Preferred time (local, WIP)",
-    help="Future: time of day for the scheduled audit.",
-)
-
-weekly_day = None
-if schedule_frequency == "Weekly":
-    weekly_day = sidebar.selectbox(
-        "Day of week (WIP)",
-        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-        index=0,
-        help="Future: weekly send-out day.",
+    schedule_time = st.time_input(
+        "Preferred time (local, WIP)",
+        help="Future: time of day for the scheduled audit.",
     )
 
-run_button = sidebar.button("Run audit & (optionally) send email", type="primary")
+    weekly_day = None
+    if schedule_frequency == "Weekly":
+        weekly_day = st.selectbox(
+            "Day of week (WIP)",
+            ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+            index=0,
+            help="Future: weekly send-out day.",
+        )
 
+    run_button = st.button("Run audit & (optionally) send email", type="primary")
 
-# -------------------------------
-# MAIN PANEL – HOW TO USE
-# -------------------------------
-st.markdown("### How to use")
-st.markdown(
-    "- Paste your publisher app IDs into the left sidebar.\n"
-    "- Optionally add excluded advertiser domains / app IDs.\n"
-    "- Add a recipient email and Claude API key if you want an AI summary email.\n"
-    "- Click **Run audit** to see the tables and (optionally) trigger the email."
-)
-
+# Placeholder for results
 results = None
 
+# -------------------------------
+# MAIN AREA – INTRO
+# -------------------------------
+st.markdown("### How to use this tool")
+st.markdown(
+    """
+1. Paste one or more **publisher app IDs** in the sidebar (one per line or comma-separated).  
+2. Optionally add **excluded domains / app market IDs** (e.g. house ads or test partners).  
+3. Add your **Claude API key** if you want an AI-written email summary.  
+4. Add **recipient email** and Gmail App Password if you want the summary emailed.  
+5. Click **Run audit** to see combined and per-app tables.
+"""
+)
+
+# -------------------------------
+# RUN PIPELINE
+# -------------------------------
 if run_button:
-    # Parse inputs
+    # Basic validation
     target_app_ids = parse_app_ids(app_ids_input)
-    excluded_block_values = parse_excluded_values(excluded_input)
+    excluded_block_values = [
+        x.strip() for x in re.split(r"[,\n]+", excluded_input) if x.strip()
+    ]
 
     if not target_app_ids:
-        st.error("Please provide at least one valid publisher app ID (left sidebar).")
+        st.error("Please provide at least one publisher app ID in the sidebar.")
     else:
         with st.spinner("Running full analysis..."):
             try:
@@ -401,17 +340,17 @@ if run_button:
                     target_app_ids=target_app_ids,
                     excluded_block_values=excluded_block_values,
                     recipient_email=recipient_email,
-                    sender_email=SENDER_GMAIL,           # fixed sender
+                    # sender_email handled in backend (defaults to ssai@liftoff.io)
+                    sender_email="",
                     gmail_app_password=gmail_app_password,
-                    openai_api_key=openai_api_key,        # passes Claude key through
+                    openai_api_key=claude_api_key,  # passes Claude key through
                 )
             except Exception as e:
                 st.error(f"Something went wrong while running the pipeline: {e}")
                 results = None
 
-
 # -------------------------------
-# RENDER RESULTS
+# OUTPUTS
 # -------------------------------
 if results is not None:
     st.success("Analysis completed.")
@@ -441,96 +380,90 @@ if results is not None:
     if email_status == "email_sent":
         st.info(f"Claude summary generated and email sent to **{recipient_email}**.")
     elif email_status == "summary_built":
-        st.info("Claude summary generated (email not sent – missing recipient or Gmail app password).")
+        st.info("Claude summary generated (email not sent – missing Gmail app password or recipient).")
     elif email_status == "failed_ai_or_email":
         st.warning("Claude summary or email failed. Showing tables only.")
         if ai_error:
-            with st.expander("Show Claude error details"):
+            with st.expander("Show AI/email error details"):
                 st.code(ai_error, language="text")
     elif email_status == "ai_not_configured":
         st.info("Claude API key not provided – skipping AI summary/email and showing tables only.")
     else:
         st.info("AI summary/email not attempted (unknown status).")
 
-    st.markdown("---")
-
-    # ---------- TABS (AI Summary now has its own tab) ----------
+    # ---------- TABS ----------
     tab_summary, tab_combined, tab_per_app, tab_metrics = st.tabs(
         ["AI Summary", "Combined Tables", "Per-App Tables", "Summary Metrics"]
     )
 
-    # ----- AI Summary Tab -----
+    # ---------- AI SUMMARY TAB ----------
     with tab_summary:
-        st.subheader("AI Summary (Claude)")
-
         html_summary = results.get("html_summary")
-        if html_summary:
-            key_insights, opportunities, tables = parse_ai_summary_html(html_summary)
 
-            # If parsing worked, render natively; otherwise fall back to raw HTML preview
-            if key_insights or opportunities or tables:
-                if key_insights:
-                    st.markdown("#### Key insights")
-                    for item in key_insights:
-                        st.markdown(f"- {item}")
-
-                if opportunities:
-                    st.markdown("#### Opportunities")
-                    for item in opportunities:
-                        st.markdown(f"- {item}")
-
-                if tables:
-                    st.markdown("#### Top tables from summary")
-                    for title, df in tables:
-                        st.markdown(f"**{title}**")
-                        st.table(df)
-            else:
-                st.caption("Could not safely parse the AI summary into bullets/tables. Showing raw HTML preview instead.")
-                st.components.v1.html(html_summary, height=500, scrolling=True)
+        if not html_summary:
+            st.info("No AI summary available. Provide a valid Claude API key to generate one.")
         else:
-            st.info(
-                "No AI summary available. Either the Claude API key was not provided "
-                "or the summary generation failed."
-            )
+            parsed = parse_ai_summary_html(html_summary)
+            key_insights = parsed["key_insights"]
+            opportunities = parsed["opportunities"]
+            tables = parsed["tables"]
 
-    # ----- Combined Tables -----
+            st.subheader("Key insights")
+            if key_insights:
+                for bullet in key_insights:
+                    st.markdown(f"- {bullet}")
+            else:
+                st.caption("No key insights found in summary.")
+
+            st.subheader("Opportunities")
+            if opportunities:
+                for bullet in opportunities:
+                    st.markdown(f"- {bullet}")
+            else:
+                st.caption("No opportunities found in summary.")
+
+            if tables:
+                st.markdown("#### Top tables from summary")
+                for title, df in tables:
+                    render_narrow_table(df, title=title, width_pct=70)
+
+            with st.expander("View raw email HTML (debug)", expanded=False):
+                st.code(html_summary, language="html")
+
+    # ---------- COMBINED TABLES ----------
     with tab_combined:
         st.subheader("Combined Tables (All Selected Apps)")
 
         with st.expander("Legend (similar app mappings)", expanded=False):
             st.code(results["combined_legend"], language="text")
 
-        st.markdown("### 1. Blocks enriched with L7D DSP spend (app + domain)")
-        st.dataframe(
-            format_money_columns(
-                results["combined_blocks_with_spend"].head(50)
-            )
+        render_narrow_table(
+            format_money_columns(results["combined_blocks_with_spend"].head(50)),
+            title="1. Blocks enriched with L7D DSP spend (app + domain)",
+            width_pct=70,
         )
 
-        st.markdown("### 2. Global advertiser network spend (L30D) for blocks")
-        st.dataframe(
-            format_money_columns(
-                results["combined_blocks_with_global"].head(50)
-            )
+        render_narrow_table(
+            format_money_columns(results["combined_blocks_with_global"].head(50)),
+            title="2. Global advertiser network spend (L30D) for blocks",
+            width_pct=70,
         )
 
-        st.markdown("### 3. Block summary per app (our apps only)")
-        st.dataframe(
+        render_narrow_table(
             format_money_columns(
-                format_block_summary_table(
-                    results["combined_summary_our"].head(50)
-                )
-            )
+                format_block_summary_table(results["combined_summary_our"].head(50))
+            ),
+            title="3. Block summary per app (our apps only)",
+            width_pct=70,
         )
 
-        st.markdown("### 4. Competitor revenue matrix (L7D per similar app)")
-        st.dataframe(
-            format_money_columns(
-                results["combined_rev_matrix"].head(50)
-            )
+        render_narrow_table(
+            format_money_columns(results["combined_rev_matrix"].head(50)),
+            title="4. Competitor revenue matrix (L7D per similar app)",
+            width_pct=70,
         )
 
-    # ----- Per-App Tables -----
+    # ---------- PER-APP TABLES ----------
     with tab_per_app:
         st.subheader("Per-App Detailed Tables")
 
@@ -545,50 +478,43 @@ if results is not None:
                         with st.expander("Similar app legend", expanded=False):
                             st.code(legend_text, language="text")
 
-                    st.markdown("**Blocks enriched with L7D DSP spend (app + domain)**")
-                    st.dataframe(
-                        format_money_columns(
-                            tables["blocks_with_spend"].head(20)
-                        )
+                    render_narrow_table(
+                        format_money_columns(tables["blocks_with_spend"].head(20)),
+                        title="Blocks enriched with L7D DSP spend (app + domain)",
+                        width_pct=70,
                     )
 
-                    st.markdown("**Global advertiser network spend (L30D) for blocks**")
-                    st.dataframe(
-                        format_money_columns(
-                            tables["blocks_with_global"].head(20)
-                        )
+                    render_narrow_table(
+                        format_money_columns(tables["blocks_with_global"].head(20)),
+                        title="Global advertiser network spend (L30D) for blocks",
+                        width_pct=70,
                     )
 
-                    st.markdown("**Block summary per app (advertiser L30D spend > 30,000)**")
-                    st.dataframe(
+                    render_narrow_table(
                         format_money_columns(
-                            format_block_summary_table(
-                                tables["summary_per_app"].head(20)
-                            )
-                        )
+                            format_block_summary_table(tables["summary_per_app"].head(20))
+                        ),
+                        title="Block summary per app (advertiser L30D spend > 30,000)",
+                        width_pct=70,
                     )
 
-                    st.markdown("**Competitor revenue matrix (L7D per similar app)**")
-                    st.dataframe(
-                        format_money_columns(
-                            tables["competitor_rev_matrix"].head(20)
-                        )
+                    render_narrow_table(
+                        format_money_columns(tables["competitor_rev_matrix"].head(20)),
+                        title="Competitor revenue matrix (L7D per similar app)",
+                        width_pct=70,
                     )
 
-    # ----- Summary Metrics -----
+    # ---------- SUMMARY METRICS ----------
     with tab_metrics:
         st.subheader("High-level Summary Metrics")
-        st.dataframe(
-            format_summary_metrics(
-                results["summary_metrics"]
-            )
+        render_narrow_table(
+            format_summary_metrics(results["summary_metrics"]),
+            title="Summary Metrics",
+            width_pct=70,
         )
         st.caption(
             "These aggregates are also used as input to the Claude summary (lost spend, competitor revenue, etc.)."
         )
 
 else:
-    st.info(
-        "Use the **Inputs** in the left sidebar to configure your [ai]udit, then click "
-        "**Run audit & (optionally) send email**."
-    )
+    st.info("Use the sidebar to configure inputs and click **Run audit & (optionally) send email** to start.")
