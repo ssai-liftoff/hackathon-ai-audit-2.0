@@ -1,5 +1,6 @@
 # app.py
 
+import re
 import streamlit as st
 import pandas as pd
 
@@ -9,9 +10,10 @@ st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout
 
 st.title("[ai]udit – AI Tool for Tracking Blocks")
 st.write(
-    "Provide publisher app IDs, optional exclusions, and your email + Claude API key. "
-    "The tool will run the full analysis, optionally email the AI summary, and show detailed tables below."
+    "Start by entering one or more publisher app IDs in the left sidebar. "
+    "Then add optional exclusions, your recipient email, and Claude API key to generate an AI summary."
 )
+
 
 # =====================================================================
 # Helper: format spend / revenue columns as $ with no decimals
@@ -112,7 +114,7 @@ def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
             # Money rows: 1,2,4
             if metric in money_metrics:
                 try:
-                    return f"${int(round(float(val))):,}"
+                    return f\"${int(round(float(val))):,}\"
                 except Exception:
                     return val
 
@@ -130,109 +132,156 @@ def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df_fmt
 
 
+# =====================================================================
+# Helper: parse App IDs like a Looker-style filter
+# =====================================================================
+def parse_app_ids(raw: str):
+    """
+    Turn a pasted blob (comma, whitespace, or newline separated)
+    into a clean list of app IDs.
+    Supports:
+      - comma-separated
+      - one-per-line
+      - mixtures of spaces/newlines/commas
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+
+    tokens = re.split(r"[,\s]+", raw)
+    return [t for t in tokens if t]
+
+
+def parse_excluded_values(raw: str):
+    """
+    Similar to parse_app_ids, but a bit looser.
+    Typically domains / market IDs.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+
+    tokens = re.split(r"[,\n\r\t]+", raw)
+    return [t.strip() for t in tokens if t.strip()]
+
+
 # -------------------------------
-# INPUTS
+# SIDEBAR INPUTS
 # -------------------------------
-st.subheader("Inputs")
+sidebar = st.sidebar
+sidebar.header("Inputs")
 
-col1, col2 = st.columns(2)
+app_ids_input = sidebar.text_area(
+    "Publisher app IDs",
+    placeholder=(
+        "Paste one app ID per line, or comma-separated.\n"
+        "Example:\n"
+        "632cc7810ca02c6344d51822\n632cc70d35cc2d93ebf3b2d5"
+    ),
+    height=140,
+)
 
-with col1:
-    app_ids_input = st.text_area(
-        "Publisher app IDs (comma-separated)",
-        placeholder="632cc7810ca02c6344d51822, 632cc70d35cc2d93ebf3b2d5, ...",
-        height=100,
-    )
+excluded_input = sidebar.text_area(
+    "Excluded block values (optional)",
+    placeholder="dreamgames.com\n1234567890",
+    height=100,
+    help="Use to ignore specific advertiser domains or app market IDs in the block analysis.",
+)
 
-    excluded_input = st.text_area(
-        "Excluded block values (optional, comma-separated)",
-        placeholder="dreamgames.com, 1234567890",
-        height=80,
-        help="Use to ignore specific advertiser domains or app market IDs in the block analysis.",
-    )
+# Name kept as openai_api_key to match backend signature,
+# but label/help clearly indicate it's the Claude / Anthropic key.
+openai_api_key = sidebar.text_input(
+    "Claude API key",
+    type="password",
+    help=(
+        "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
+        "Leave blank to skip AI summary and only see tables."
+    ),
+)
 
-with col2:
-    # Name kept as openai_api_key to match backend signature,
-    # but label/help clearly indicate it's the Claude / Anthropic key.
-    openai_api_key = st.text_input(
-        "Claude API key",
-        type="password",
-        help=(
-            "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
-            "Leave blank to skip AI summary and only see tables."
-        ),
-    )
+recipient_email = sidebar.text_input(
+    "Recipient email (summary will be sent here)",
+    value="",
+)
 
-    recipient_email = st.text_input(
-        "Recipient email (summary will be sent here)",
-        value="",
-    )
-    sender_email = st.text_input(
-        "Sender Gmail (SMTP account)",
-        value="",
-        help="Gmail address used to send the email. Must have an App Password configured."
-    )
-    gmail_app_password = st.text_input(
-        "Gmail App Password",
-        type="password",
-        help="16-character Gmail App Password. Leave blank to skip sending email and only show tables.",
-    )
+# Sender Gmail is now fixed; no user input.
+SENDER_GMAIL = "ssai@liftoff.io"
+sidebar.caption(
+    f"Emails will always be sent from **{SENDER_GMAIL}** using the Gmail App Password below."
+)
+
+gmail_app_password = sidebar.text_input(
+    "Gmail App Password (for sender account)",
+    type="password",
+    help="16-character Gmail App Password for ssai@liftoff.io. "
+         "Leave blank to skip sending email and only show tables.",
+)
 
 # -------------------------------
 # Inline Scheduler (WIP – no real automation)
 # -------------------------------
-st.markdown("### Scheduler (WIP)")
+sidebar.markdown("### Scheduler (WIP)")
 
-st.caption(
+sidebar.caption(
     "Prototype controls for future automation. These settings are **not yet scheduling anything**, "
     "but can be used in demos to show how recurring audits might be configured."
 )
 
-sched_col1, sched_col2, sched_col3 = st.columns([1, 1, 1.2])
+sched_col1, sched_col2 = sidebar.columns([1, 1])
 
 with sched_col1:
-    scheduler_enabled = st.checkbox(
+    scheduler_enabled = sidebar.checkbox(
         "Enable schedule (WIP)",
         value=False,
         help="Visual only – does not actually schedule background runs yet.",
     )
 
 with sched_col2:
-    schedule_frequency = st.selectbox(
+    schedule_frequency = sidebar.selectbox(
         "Frequency (WIP)",
         ["None", "Daily", "Weekly", "Monthly"],
         index=0,
         help="Future: how often the audit would run.",
     )
 
-with sched_col3:
-    schedule_time = st.time_input(
-        "Preferred time (local, WIP)",
-        help="Future: time of day for the scheduled audit.",
-    )
+schedule_time = sidebar.time_input(
+    "Preferred time (local, WIP)",
+    help="Future: time of day for the scheduled audit.",
+)
 
-# Weekly-specific extra control (still WIP)
 weekly_day = None
 if schedule_frequency == "Weekly":
-    weekly_day = st.selectbox(
+    weekly_day = sidebar.selectbox(
         "Day of week (WIP)",
         ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
         index=0,
         help="Future: weekly send-out day.",
     )
 
-run_button = st.button("Run audit & (optionally) send email", type="primary")
+run_button = sidebar.button("Run audit & (optionally) send email", type="primary")
 
-# Placeholder for results
+
+# -------------------------------
+# MAIN PANEL – OUTPUTS
+# -------------------------------
+
+st.markdown("### How to use")
+st.markdown(
+    "- Paste your publisher app IDs into the left sidebar.\n"
+    "- Optionally add excluded advertiser domains / app IDs.\n"
+    "- Add a recipient email and Claude API key if you want an AI summary email.\n"
+    "- Click **Run audit** to see the tables and (optionally) trigger the email."
+)
+
 results = None
 
 if run_button:
-    # Basic validation
-    target_app_ids = [x.strip() for x in app_ids_input.split(",") if x.strip()]
-    excluded_block_values = [x.strip() for x in excluded_input.split(",") if x.strip()]
+    # Parse inputs
+    target_app_ids = parse_app_ids(app_ids_input)
+    excluded_block_values = parse_excluded_values(excluded_input)
 
     if not target_app_ids:
-        st.error("Please provide at least one publisher app ID.")
+        st.error("Please provide at least one valid publisher app ID (left sidebar).")
     else:
         with st.spinner("Running full analysis..."):
             try:
@@ -240,16 +289,16 @@ if run_button:
                     target_app_ids=target_app_ids,
                     excluded_block_values=excluded_block_values,
                     recipient_email=recipient_email,
-                    sender_email=sender_email,
+                    sender_email=SENDER_GMAIL,           # fixed sender
                     gmail_app_password=gmail_app_password,
-                    openai_api_key=openai_api_key,  # passes Claude key through
+                    openai_api_key=openai_api_key,        # passes Claude key through
                 )
             except Exception as e:
                 st.error(f"Something went wrong while running the pipeline: {e}")
                 results = None
 
 # -------------------------------
-# OUTPUTS
+# RENDER RESULTS
 # -------------------------------
 
 if results is not None:
@@ -270,7 +319,7 @@ if results is not None:
         st.info(sched_text)
     else:
         st.caption(
-            "Scheduler WIP: enable it above and choose a frequency/time to see the planned run cadence."
+            "Scheduler WIP: enable it in the sidebar and choose a frequency/time to see the planned run cadence."
         )
 
     # Email / AI summary status
@@ -280,11 +329,11 @@ if results is not None:
     if email_status == "email_sent":
         st.info(f"Claude summary generated and email sent to **{recipient_email}**.")
     elif email_status == "summary_built":
-        st.info("Claude summary generated (email not sent – missing sender/recipient or Gmail app password).")
+        st.info("Claude summary generated (email not sent – missing recipient or Gmail app password).")
     elif email_status == "failed_ai_or_email":
         st.warning("Claude summary or email failed. Showing tables only.")
         if ai_error:
-            with st.expander("Show AI/email error details"):
+            with st.expander("Show Claude error details"):
                 st.code(ai_error, language="text")
     elif email_status == "ai_not_configured":
         st.info("Claude API key not provided – skipping AI summary/email and showing tables only.")
@@ -400,4 +449,7 @@ if results is not None:
         )
 
 else:
-    st.info("Fill in the inputs above and click **Run audit & (optionally) send email** to start.")
+    st.info(
+        "Use the **Inputs** in the left sidebar to configure your [ai]udit, then click "
+        "**Run audit & (optionally) send email**."
+    )
