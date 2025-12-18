@@ -4,7 +4,7 @@ import re
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from backend import run_full_pipeline
 
@@ -25,74 +25,7 @@ if "results" not in st.session_state:
 
 
 # =====================================================================
-# Helper: format spend / revenue columns as $ with no decimals
-# =====================================================================
-def format_money_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Format any spend/revenue column into $#,### (no decimals).
-    Now also includes *_rev_l7d columns used in the competitor matrix.
-    Ensures the column stays as string so Streamlit doesn't override.
-    Skips any column whose name contains 'rank'.
-    """
-    if df is None or df.empty:
-        return df
-
-    df_fmt = df.copy()
-    money_cols = [
-        c
-        for c in df_fmt.columns
-        if (
-            any(key in c.lower() for key in ["spend", "revenue"])
-            or c.lower().endswith("_rev_l7d")  # revenue columns in Table 4
-        )
-        and "rank" not in c.lower()  # avoid e.g. rank_missed_spend
-    ]
-
-    for col in money_cols:
-        # Only numeric columns should be formatted
-        if pd.api.types.is_numeric_dtype(df_fmt[col]):
-            df_fmt[col] = df_fmt[col].apply(
-                lambda x: f"${int(round(x)):,}" if pd.notnull(x) else ""
-            )
-        # Force column to string to prevent Streamlit from auto-formatting
-        df_fmt[col] = df_fmt[col].astype(str)
-
-    return df_fmt
-
-
-# =====================================================================
-# Helper: specific formatting for Block Summary table (Table 3)
-# =====================================================================
-def format_block_summary_table(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For block summary tables:
-      - block_rate_diff_vs_peers: whole number (no decimals)
-      - rank_* columns: integer (no $ formatting)
-    Spend columns are still formatted via format_money_columns().
-    """
-    if df is None or df.empty:
-        return df
-
-    df_fmt = df.copy()
-
-    # 1) block_rate_diff_vs_peers as whole number
-    if "block_rate_diff_vs_peers" in df_fmt.columns:
-        if pd.api.types.is_numeric_dtype(df_fmt["block_rate_diff_vs_peers"]):
-            df_fmt["block_rate_diff_vs_peers"] = (
-                df_fmt["block_rate_diff_vs_peers"].round(0).astype("Int64")
-            )
-
-    # 2) Any rank column as Int64
-    for col in df_fmt.columns:
-        if "rank" in col.lower():
-            if pd.api.types.is_numeric_dtype(df_fmt[col]):
-                df_fmt[col] = df_fmt[col].astype("Int64")
-
-    return df_fmt
-
-
-# =====================================================================
-# Helper: format Summary Metrics table
+# Helper: format Summary Metrics table (st.dataframe)
 # =====================================================================
 def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -142,37 +75,118 @@ def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =====================================================================
-# Helper: render interactive AgGrid for raw tables
+# Helper: specific formatting for Block Summary table (Table 3) – numeric only
+# =====================================================================
+def format_block_summary_table(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For block summary tables (numeric-only version for AgGrid):
+      - block_rate_diff_vs_peers: whole number (no decimals)
+      - rank_* columns: integer
+    Money columns stay numeric so AgGrid can sort correctly and format via JS.
+    """
+    if df is None or df.empty:
+        return df
+
+    df_fmt = df.copy()
+
+    # 1) block_rate_diff_vs_peers as whole number
+    if "block_rate_diff_vs_peers" in df_fmt.columns:
+        if pd.api.types.is_numeric_dtype(df_fmt["block_rate_diff_vs_peers"]):
+            df_fmt["block_rate_diff_vs_peers"] = df_fmt["block_rate_diff_vs_peers"].round(0)
+
+    # 2) Any rank column as integer (keep numeric)
+    for col in df_fmt.columns:
+        if "rank" in col.lower():
+            if pd.api.types.is_numeric_dtype(df_fmt[col]):
+                df_fmt[col] = df_fmt[col].round(0)
+
+    return df_fmt
+
+
+# =====================================================================
+# Helper: determine money columns for AgGrid
+# =====================================================================
+def get_money_columns(df: pd.DataFrame):
+    if df is None or df.empty:
+        return []
+    return [
+        c
+        for c in df.columns
+        if (
+            any(key in c.lower() for key in ["spend", "revenue"])
+            or c.lower().endswith("_rev_l7d")
+        )
+        and "rank" not in c.lower()
+    ]
+
+
+# =====================================================================
+# Helper: render interactive AgGrid for raw tables (numeric, sortable, copyable)
 # =====================================================================
 def render_aggrid(df: pd.DataFrame, height: int = 380):
     """
     Render a nice interactive AgGrid:
     - Sorting, filtering, resizing
     - Pagination
-    - Full-width in the main content area
+    - Range selection + clipboard (copyable)
+    - Money columns formatted as $#,### client-side, but remain numeric for sorting
     """
     if df is None or df.empty:
         st.write("No data to display.")
         return
 
-    gb = GridOptionsBuilder.from_dataframe(df)
+    df_ag = df.copy()
+
+    gb = GridOptionsBuilder.from_dataframe(df_ag)
     gb.configure_default_column(
         resizable=True,
         filter=True,
         sortable=True,
     )
     gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=25)
-    gb.configure_selection("single", use_checkbox=False)
+    gb.configure_selection("multiple", use_checkbox=True)
+
+    # Enable range selection + clipboard
+    gb.configure_grid_options(
+        enableRangeSelection=True,
+        enableRangeHandle=True,
+        suppressCopyRowsToClipboard=False,
+        copyHeadersToClipboard=True,
+    )
+
+    # JS formatter for money columns (keeps underlying values numeric)
+    money_cols = get_money_columns(df_ag)
+
+    money_formatter = JsCode(
+        """
+        function(params) {
+            if (params.value === null || params.value === undefined || isNaN(params.value)) {
+                return '';
+            }
+            var v = Math.round(params.value);
+            return '$' + v.toLocaleString();
+        }
+        """
+    )
+
+    for col in money_cols:
+        gb.configure_column(
+            col,
+            type=["numericColumn"],
+            valueFormatter=money_formatter,
+        )
 
     gridOptions = gb.build()
 
     AgGrid(
-        df,
+        df_ag,
         gridOptions=gridOptions,
         update_mode=GridUpdateMode.NO_UPDATE,
         fit_columns_on_grid_load=True,
         use_container_width=True,
         enable_enterprise_modules=False,
+        allow_unsafe_jscode=True,  # needed for JsCode formatter
+        height=height,
     )
 
 
@@ -430,7 +444,7 @@ if results is not None:
         else:
             st.info("No AI summary was generated. Check API key / error details above.")
 
-    # ----- Combined Tables (AgGrid, full-width) -----
+    # ----- Combined Tables (AgGrid, full-width, copyable) -----
     with tab_combined:
         st.subheader("Combined Tables (All Selected Apps)")
 
@@ -438,24 +452,26 @@ if results is not None:
             st.code(results["combined_legend"], language="text")
 
         st.markdown("### 1. Blocks enriched with L7D DSP spend (app + domain)")
-        df1 = format_money_columns(results["combined_blocks_with_spend"].head(50))
+        df1 = results["combined_blocks_with_spend"].head(50)
+        df1 = df1.copy()
         render_aggrid(df1)
 
         st.markdown("### 2. Global advertiser network spend (L30D) for blocks")
-        df2 = format_money_columns(results["combined_blocks_with_global"].head(50))
+        df2 = results["combined_blocks_with_global"].head(50)
+        df2 = df2.copy()
         render_aggrid(df2)
 
         st.markdown("### 3. Block summary per app (our apps only)")
-        df3 = format_money_columns(
-            format_block_summary_table(results["combined_summary_our"].head(50))
-        )
+        df3 = results["combined_summary_our"].head(50)
+        df3 = format_block_summary_table(df3)
         render_aggrid(df3)
 
         st.markdown("### 4. Competitor revenue matrix (L7D per similar app)")
-        df4 = format_money_columns(results["combined_rev_matrix"].head(50))
+        df4 = results["combined_rev_matrix"].head(50)
+        df4 = df4.copy()
         render_aggrid(df4)
 
-    # ----- Per-App Tables (AgGrid, full-width) -----
+    # ----- Per-App Tables (AgGrid, full-width, copyable) -----
     with tab_per_app:
         st.subheader("Per-App Detailed Tables")
 
@@ -471,21 +487,20 @@ if results is not None:
                             st.code(legend_text, language="text")
 
                     st.markdown("**Blocks enriched with L7D DSP spend (app + domain)**")
-                    df_pa1 = format_money_columns(tables["blocks_with_spend"].head(20))
+                    df_pa1 = tables["blocks_with_spend"].head(20).copy()
                     render_aggrid(df_pa1)
 
                     st.markdown("**Global advertiser network spend (L30D) for blocks**")
-                    df_pa2 = format_money_columns(tables["blocks_with_global"].head(20))
+                    df_pa2 = tables["blocks_with_global"].head(20).copy()
                     render_aggrid(df_pa2)
 
                     st.markdown("**Block summary per app (advertiser L30D spend > 30,000)**")
-                    df_pa3 = format_money_columns(
-                        format_block_summary_table(tables["summary_per_app"].head(20))
-                    )
+                    df_pa3 = tables["summary_per_app"].head(20)
+                    df_pa3 = format_block_summary_table(df_pa3)
                     render_aggrid(df_pa3)
 
                     st.markdown("**Competitor revenue matrix (L7D per similar app)**")
-                    df_pa4 = format_money_columns(tables["competitor_rev_matrix"].head(20))
+                    df_pa4 = tables["competitor_rev_matrix"].head(20).copy()
                     render_aggrid(df_pa4)
 
     # ----- Summary Metrics -----
