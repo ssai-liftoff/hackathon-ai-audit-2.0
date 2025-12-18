@@ -114,7 +114,7 @@ def format_summary_metrics(df: pd.DataFrame) -> pd.DataFrame:
             # Money rows: 1,2,4
             if metric in money_metrics:
                 try:
-                    return f\"${int(round(float(val))):,}\"
+                    return f"${int(round(float(val))):,}"
                 except Exception:
                     return val
 
@@ -230,14 +230,14 @@ sidebar.caption(
 sched_col1, sched_col2 = sidebar.columns([1, 1])
 
 with sched_col1:
-    scheduler_enabled = sidebar.checkbox(
+    scheduler_enabled = sched_col1.checkbox(
         "Enable schedule (WIP)",
         value=False,
         help="Visual only – does not actually schedule background runs yet.",
     )
 
 with sched_col2:
-    schedule_frequency = sidebar.selectbox(
+    schedule_frequency = sched_col2.selectbox(
         "Frequency (WIP)",
         ["None", "Daily", "Weekly", "Monthly"],
         index=0,
