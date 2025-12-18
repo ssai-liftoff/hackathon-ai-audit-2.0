@@ -14,10 +14,24 @@ DEFAULT_SENDER_EMAIL = "ssai@liftoff.io"
 st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout="wide")
 
 st.title("[ai]udit – AI Tool for Tracking Blocks")
-st.write(
-    "Paste one or more publisher app IDs in the sidebar, configure exclusions and email, "
-    "then run an [ai]udit to analyse blocks, missed demand, and competitor monetization."
-)
+
+# Persistent, easy-to-read instructions (no mention of API key / Gmail password)
+instructions_text = """
+**How to use [ai]udit**
+
+1. In the **sidebar**, paste one or more *publisher app IDs* (one per line or comma/space-separated).
+2. (Optional) Add any **block values to exclude** (domains or app market IDs) to clean up the analysis.
+3. (Optional) Enter a **recipient email** if you want the summary emailed after the run.
+4. (Optional) Adjust the **Scheduler (WIP)** controls to show how recurring audits might work in the future.
+5. Click **Run [ai]udit & (optionally) send email** in the sidebar.
+6. Use the tabs at the top to explore:
+   - **AI Summary** – narrative insights + supporting tables.
+   - **Combined Tables** – interactive, sortable view across all selected apps.
+   - **Per-App Tables** – drill-down per publisher app.
+   - **Summary Metrics** – top-line aggregates (lost spend, competitor revenue, etc.).
+"""
+
+st.info(instructions_text)
 
 # Session state for results so interactions (sorting/filtering) don't force re-run
 if "results" not in st.session_state:
@@ -280,32 +294,9 @@ with st.sidebar:
         help="Paste domains or app market IDs to ignore in the block analysis (one per line or comma-separated).",
     )
 
-    st.markdown("---")
-    st.subheader("AI & Email")
-
-    # Name kept as openai_api_key to match backend signature,
-    # but label/help clearly indicate it's the Claude / Anthropic key.
-    openai_api_key = st.text_input(
-        "Claude API key",
-        type="password",
-        help=(
-            "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
-            "Leave blank to skip AI summary and only see tables."
-        ),
-    )
-
     recipient_email = st.text_input(
         "Recipient email (summary will be sent here)",
         value="",
-    )
-
-    # Sender email is fixed; show it as read-only info
-    st.caption(f"Sender Gmail (fixed): **{DEFAULT_SENDER_EMAIL}**")
-
-    gmail_app_password = st.text_input(
-        "Gmail App Password",
-        type="password",
-        help="16-character Gmail App Password. Leave blank to skip sending email and only show tables.",
     )
 
     st.markdown("---")
@@ -345,6 +336,32 @@ with st.sidebar:
             index=0,
             help="Future: weekly send-out day.",
         )
+
+    st.markdown("---")
+    # -------------------------------
+    # AI & Email (dev-only controls) – moved to bottom of sidebar
+    # -------------------------------
+    st.subheader("AI & Email (dev-only)")
+
+    # Name kept as openai_api_key to match backend signature,
+    # but label/help clearly indicate it's the Claude / Anthropic key.
+    openai_api_key = st.text_input(
+        "Claude API key",
+        type="password",
+        help=(
+            "Paste your Claude (Anthropic) API key here (e.g. starts with `sk-ant-`). "
+            "Leave blank to skip AI summary and only see tables."
+        ),
+    )
+
+    # Sender email is fixed; show it as read-only info
+    st.caption(f"Sender Gmail (fixed): **{DEFAULT_SENDER_EMAIL}**")
+
+    gmail_app_password = st.text_input(
+        "Gmail App Password",
+        type="password",
+        help="16-character Gmail App Password. Leave blank to skip sending email and only show tables.",
+    )
 
     run_button = st.button("Run [ai]udit & (optionally) send email", type="primary")
 
@@ -452,13 +469,11 @@ if results is not None:
             st.code(results["combined_legend"], language="text")
 
         st.markdown("### 1. Blocks enriched with L7D DSP spend (app + domain)")
-        df1 = results["combined_blocks_with_spend"].head(50)
-        df1 = df1.copy()
+        df1 = results["combined_blocks_with_spend"].head(50).copy()
         render_aggrid(df1)
 
         st.markdown("### 2. Global advertiser network spend (L30D) for blocks")
-        df2 = results["combined_blocks_with_global"].head(50)
-        df2 = df2.copy()
+        df2 = results["combined_blocks_with_global"].head(50).copy()
         render_aggrid(df2)
 
         st.markdown("### 3. Block summary per app (our apps only)")
@@ -467,8 +482,7 @@ if results is not None:
         render_aggrid(df3)
 
         st.markdown("### 4. Competitor revenue matrix (L7D per similar app)")
-        df4 = results["combined_rev_matrix"].head(50)
-        df4 = df4.copy()
+        df4 = results["combined_rev_matrix"].head(50).copy()
         render_aggrid(df4)
 
     # ----- Per-App Tables (AgGrid, full-width, copyable) -----
@@ -514,4 +528,7 @@ if results is not None:
         )
 
 else:
-    st.info("Use the sidebar to configure inputs, then click **Run [ai]udit & (optionally) send email** to start.")
+    # No results yet – rely on the persistent instructions at the top
+    st.info(
+        "Use the sidebar to configure inputs, then click **Run [ai]udit & (optionally) send email** to start."
+    )
