@@ -3,7 +3,6 @@
 import re
 import streamlit as st
 import pandas as pd
-from bs4 import BeautifulSoup
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from backend import run_full_pipeline
@@ -16,7 +15,7 @@ st.set_page_config(page_title="[ai]udit – AI Tool for Tracking Blocks", layout
 st.title("[ai]udit – AI Tool for Tracking Blocks")
 
 # ---------------------------------------------------------------------
-# Global CSS for instruction & summary boxes + compact spacing
+# Global CSS for instruction box + AI summary card (compact spacing)
 # ---------------------------------------------------------------------
 st.markdown(
     """
@@ -40,11 +39,12 @@ st.markdown(
     padding-left: 1.3rem;
 }
 
+/* AI summary container: white background, light border, compact text */
 .summary-box {
-    background-color: #ecfdf3;  /* pale green */
+    background-color: #ffffff;
     padding: 16px 18px;
     border-radius: 8px;
-    border: 1px solid #bbf7d0;
+    border: 1px solid #e0e0e0;
     margin-bottom: 16px;
 }
 .summary-box h2,
@@ -68,6 +68,7 @@ st.markdown(
     font-size: 0.8rem;
     margin-top: 4px;
     margin-bottom: 8px;
+    width: auto;  /* tables size to content, not full width */
 }
 </style>
 """,
@@ -97,7 +98,6 @@ instructions_html = """
   </ol>
 </div>
 """
-
 st.markdown(instructions_html, unsafe_allow_html=True)
 
 # Session state for results so interactions (sorting/filtering) don't force re-run
@@ -272,78 +272,19 @@ def render_aggrid(df: pd.DataFrame, height: int = 380):
 
 
 # =====================================================================
-# Helper: parse & render AI summary HTML natively INSIDE green box
+# Helper: render AI summary HTML as-is inside a styled box
 # =====================================================================
 def render_ai_summary_native(html_summary: str):
     """
-    Parse the Claude-generated HTML summary and render it inside
-    a compact, pale green box:
-      - Headings & intro as small HTML headings/paragraphs
-      - Bullet lists as tight <ul>/<li>
-      - Tables as inline-block HTML so width fits the data
+    Render the Claude-generated HTML summary directly inside a
+    white card with light borders and compact spacing.
+    We don't modify the inner HTML, so tables stay intact.
     """
     if not html_summary:
         st.info("No AI summary is available.")
         return
 
-    soup = BeautifulSoup(html_summary, "html.parser")
-
-    pieces = []
-
-    # Top-level title (h2 in the HTML wrapper)
-    h2 = soup.find("h2")
-    if h2:
-        pieces.append(f"<h3>{h2.get_text(strip=True)}</h3>")
-
-    # First paragraph (intro)
-    first_p = soup.find("p")
-    if first_p:
-        intro_text = first_p.get_text(" ", strip=True)
-        pieces.append(f"<p>{intro_text}</p>")
-
-    # Key insights / Opportunities sections
-    for h3 in soup.find_all("h3"):
-        section_title = h3.get_text(strip=True)
-        pieces.append(f"<h4>{section_title}</h4>")
-
-        ul = h3.find_next_sibling("ul")
-        if ul:
-            pieces.append("<ul>")
-            for li in ul.find_all("li"):
-                bullet_text = li.get_text(" ", strip=True)
-                pieces.append(f"<li>{bullet_text}</li>")
-            pieces.append("</ul>")
-
-    # Supporting tables
-    tables = soup.find_all("table")
-    if tables:
-        pieces.append("<h4>Supporting tables</h4>")
-        for table in tables:
-            # Try to get the bold title just before the table
-            title_text = None
-            prev = table.find_previous()
-            while prev is not None:
-                if prev.name == "b":
-                    title_text = prev.get_text(strip=True)
-                    break
-                prev = prev.find_previous()
-
-            if title_text:
-                fragment = f"<b>{title_text}</b><br>{str(table)}"
-            else:
-                fragment = str(table)
-
-            pieces.append(
-                f"""
-                <div style="display:inline-block; margin-right:12px; margin-bottom:8px;">
-                    {fragment}
-                </div>
-                """
-            )
-
-    combined_html = "".join(pieces)
-
-    box_html = f'<div class="summary-box">{combined_html}</div>'
+    box_html = f'<div class="summary-box">{html_summary}</div>'
     st.markdown(box_html, unsafe_allow_html=True)
 
 
@@ -526,7 +467,7 @@ if results is not None:
         ["AI Summary", "Combined Tables", "Per-App Tables", "Summary Metrics"]
     )
 
-    # ----- AI Summary (native, green box, NO AgGrid) -----
+    # ----- AI Summary (native card, NO AgGrid) -----
     with tab_summary:
         html_summary = results.get("html_summary")
         if html_summary:
